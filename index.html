@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex,nofollow,noarchive">
+  <title>Encrypted job status</title>
+  <style>
+    :root{color-scheme:light;--ink:#17324a;--muted:#5b6c7d;--blue:#1e4265;--line:#d8e1e9;--paper:#f4f7fa;--white:#fff}
+    *{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+    main{max-width:920px;margin:9vh auto;padding:24px}.card{background:var(--white);border:1px solid var(--line);border-radius:14px;padding:clamp(22px,5vw,48px);box-shadow:0 16px 40px #17324a12}
+    h1{font-size:clamp(26px,5vw,38px);line-height:1.15;margin:0 0 10px;letter-spacing:-.03em}p{color:var(--muted);margin:0 0 22px}
+    form{display:flex;gap:10px;flex-wrap:wrap}input{flex:1;min-width:220px;padding:13px 15px;border:1px solid #aab9c7;border-radius:8px;font:inherit}
+    button{border:0;border-radius:8px;background:var(--blue);color:#fff;padding:12px 18px;font:600 15px/1.2 system-ui,-apple-system,"Segoe UI",sans-serif;cursor:pointer}button:focus-visible,input:focus-visible{outline:3px solid #d39134;outline-offset:3px}
+    #message{min-height:24px;margin-top:12px;color:#9b3040;font-size:14px}.toolbar{display:none;gap:8px;flex-wrap:wrap;margin:20px 0 12px}.toolbar button[aria-pressed=true]{background:#067168}.toolbar .lock{background:#526477;margin-left:auto}
+    iframe{display:none;width:100%;height:78vh;min-height:600px;border:1px solid var(--line);border-radius:10px;background:#fff}
+    .privacy{font-size:12px;margin:18px 0 0;color:#6b7885}
+  </style>
+</head>
+<body>
+  <main>
+    <section class="card" aria-labelledby="title">
+      <h1 id="title">Job status dashboards</h1>
+      <p>Enter the access password to decrypt and view the latest dashboards in this browser.</p>
+      <form id="unlock-form">
+        <label for="password" hidden>Access password</label>
+        <input id="password" type="password" inputmode="text" autocomplete="off" required placeholder="Access password">
+        <button type="submit">Unlock</button>
+      </form>
+      <div id="message" role="status" aria-live="polite"></div>
+      <div class="toolbar" id="toolbar" aria-label="Status dashboards">
+        <button id="bcf-tab" type="button" aria-pressed="true">BCF status</button>
+        <button id="us-tab" type="button" aria-pressed="false">U.S. new-grad status</button>
+        <button id="lock" class="lock" type="button">Lock</button>
+      </div>
+      <iframe id="dashboard" title="Status dashboard" sandbox="allow-scripts allow-forms allow-downloads allow-popups"></iframe>
+      <p class="privacy">The password is used only in this browser to decrypt the published ciphertext. It is not sent to GitHub or a server. GitHub hosts the encrypted dashboard data, which anyone can download; use a strong password and share it only with intended viewers.</p>
+    </section>
+  </main>
+  <script>
+    'use strict';
+    const form=document.querySelector('#unlock-form');
+    const input=document.querySelector('#password');
+    const message=document.querySelector('#message');
+    const toolbar=document.querySelector('#toolbar');
+    const frame=document.querySelector('#dashboard');
+    const tabs={bcf:document.querySelector('#bcf-tab'),us:document.querySelector('#us-tab')};
+    let pages=null;
+    const bytes=value=>Uint8Array.from(atob(value),c=>c.charCodeAt(0));
+    async function decrypt(password){
+      const response=await fetch(`./status.enc.json?v=${Date.now()}`,{cache:'no-store'});
+      if(!response.ok)throw new Error('payload');
+      const envelope=await response.json();
+      if(envelope.version!==1||envelope.kdf!=='PBKDF2-SHA256'||envelope.iterations<600000)throw new Error('format');
+      const material=await crypto.subtle.importKey('raw',new TextEncoder().encode(password),'PBKDF2',false,['deriveKey']);
+      const key=await crypto.subtle.deriveKey({name:'PBKDF2',salt:bytes(envelope.salt),iterations:envelope.iterations,hash:'SHA-256'},material,{name:'AES-GCM',length:256},false,['decrypt']);
+      const cipher=bytes(envelope.ciphertext),tag=bytes(envelope.tag),combined=new Uint8Array(cipher.length+tag.length);
+      combined.set(cipher);combined.set(tag,cipher.length);
+      const clear=await crypto.subtle.decrypt({name:'AES-GCM',iv:bytes(envelope.iv),tagLength:128},key,combined);
+      const decoded=JSON.parse(new TextDecoder().decode(clear));
+      if(decoded.version!==1||typeof decoded.pages?.bcf!=='string'||typeof decoded.pages?.us!=='string')throw new Error('content');
+      return decoded.pages;
+    }
+    function showPage(which){
+      if(!pages)return;
+      frame.srcdoc=pages[which];
+      for(const [key,button] of Object.entries(tabs))button.setAttribute('aria-pressed',String(key===which));
+      frame.title=which==='bcf'?'Boston Career Forum status dashboard':'U.S. new-grad status dashboard';
+    }
+    form.addEventListener('submit',async event=>{
+      event.preventDefault();message.textContent='Decrypting…';
+      try{pages=await decrypt(input.value);input.value='';form.style.display='none';toolbar.style.display='flex';frame.style.display='block';message.textContent='';showPage('bcf');}
+      catch{pages=null;message.textContent='Password incorrect or encrypted data unavailable. Try again.';}
+    });
+    tabs.bcf.addEventListener('click',()=>showPage('bcf'));
+    tabs.us.addEventListener('click',()=>showPage('us'));
+    document.querySelector('#lock').addEventListener('click',()=>{pages=null;frame.srcdoc='';frame.style.display='none';toolbar.style.display='none';form.style.display='flex';input.value='';message.textContent='Dashboards locked.';input.focus();});
+  </script>
+</body>
+</html>
+
